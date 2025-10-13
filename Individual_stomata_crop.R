@@ -16,11 +16,11 @@ get_ffmpeg_path <- function() {
   
   message("FFmpeg not found. Using managed Python environment...")
   Sys.setenv(RETICULATE_PYTHON = "managed")
-  
   reticulate::py_require(
-    packages = c("imageio-ffmpeg", "ultralytics", "numpy"),
+    packages = c("numpy", "opencv-python", "matplotlib", "scikit-image","imageio-ffmpeg", "ultralytics", "numpy"), 
     python_version = "3.12.4"
   )
+
   
   ffmpeg <- reticulate::import("imageio_ffmpeg")
   exe <- ffmpeg$get_ffmpeg_exe()
@@ -40,7 +40,7 @@ run_inference <- function(image_dir, model_path) {
   ultralytics <- import("ultralytics")
   model <- ultralytics$YOLO(model_path)
   
-  image_paths <- list.files(image_dir, pattern = "\\.tif$", full.names = TRUE)
+  image_paths <- list.files(image_dir, pattern = "\\.jpg$", full.names = TRUE)
   results_list <- list()
   
   for (image_path in image_paths) {
@@ -115,7 +115,7 @@ crop_detections_ffmpeg <- function(detections, image_dir, output_base_dir, ffmpe
     
     # Output file name: combine image name + shape ID
     base_name <- file_path_sans_ext(row$image)
-    output_path <- file.path(output_base_dir, sprintf("%s_shape_%d.tif", base_name, row$shape_id))
+    output_path <- file.path(output_base_dir, sprintf("%s_shape_%d.jpg", base_name, row$shape_id))
     
     # FFmpeg crop command
     cmd <- sprintf(
@@ -126,7 +126,7 @@ crop_detections_ffmpeg <- function(detections, image_dir, output_base_dir, ffmpe
     system(cmd, ignore.stdout = TRUE, ignore.stderr = TRUE)
   }
   
-  message("✅ Cropping complete. All TIFF crops saved to: ", normalizePath(output_base_dir))
+  message("✅ Cropping complete. All jpgF crops saved to: ", normalizePath(output_base_dir))
 }
 
 
@@ -134,10 +134,7 @@ crop_detections_ffmpeg <- function(detections, image_dir, output_base_dir, ffmpe
 # --------------------------------------------------------------
 # 4. Main runner
 # --------------------------------------------------------------
-individual_stomata_crop <- function(
-    image_dir = "D:/stomata/frames",
-    model_path = "stomata_test1.pt"
-){
+individual_stomata_crop <- function(image_dir,model_path){
   
   message("=== Starting YOLO Inference and FFmpeg Cropping ===")
   detections <- run_inference(image_dir, model_path)
@@ -152,5 +149,8 @@ individual_stomata_crop <- function(
 # --------------------------------------------------------------
 # 5. Run
 # --------------------------------------------------------------
-individual_stomata_crop()
+individual_stomata_crop(image_dir = "D:/stomata/Just testing with Leica-ATC2000 - 20X/",
+                        model_path = "stomata_test1.pt")
+image_dir <- "D:/stomata/Just testing with Leica-ATC2000 - 20X/"
+model_path <- "stomata_test1.pt"
 

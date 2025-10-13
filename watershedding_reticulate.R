@@ -1,87 +1,119 @@
-
-# =============================================================
-# Plant Cell Segmentation in R using Python via reticulate
-# =============================================================
-
-# --- Setup Environment ---
-# install.packages("reticulate")
 library(reticulate)
 Sys.setenv(RETICULATE_PYTHON = "managed")
 
-reticulate::py_require(packages = c("numpy", "opencv-python", "matplotlib", "scikit-image"), python_version = "3.12.4")
-# --- Import Python Modules ---
-cv2 <- import("cv2")
-np <- import("numpy")
-plt <- import("matplotlib.pyplot")
-skimage <- import("skimage", convert = TRUE)
-measure <- import("skimage.measure")
-color <- import("skimage.color")
-exposure <- import("skimage.exposure")
+reticulate::py_require(
+  packages = c("numpy","opencv-python","ultralytics","scikit-image"),
+  python_version = "3.12.4"
+)
 
-# --- Define Python Function (embedded directly in R) ---
+# -----------------------------
+# 1️⃣ Watershed segmentation (Python)
+# -----------------------------
 py_run_string("
 import cv2
 import numpy as np
-import matplotlib.pyplot as plt
-from skimage import exposure, color, measure
+from skimage import measure
 
-def segment_cells(filename='plant_cells_20x.png'):
-    # 1️⃣ Load & Preprocess
-    img = cv2.imread(filename)
-    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8,8))
+def watershed_cells(filename):
+    img = cv2.imread(filename, cv2.IMREAD_UNCHANGED)
+    # Safe grayscale handling
+    if len(img.shape) == 2:
+        gray = img.copy()
+        img_rgb = cv2.merge([gray, gray, gray])
+    elif img.shape[2] == 1:
+        gray = img[:,:,0]
+        img_rgb = cv2.merge([gray, gray, gray])
+    else:
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        img_rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
+    # CLAHE + blur
+    clahe = cv2.createCLAHE(clipLimit=4.0, tileGridSize=(16,16))
     enhanced = clahe.apply(gray)
-    blur = cv2.GaussianBlur(enhanced, (7,7), 0)
+    blur = cv2.GaussianBlur(enhanced, (5,5), 0)
 
-    # 2️⃣ Wall Enhancement
-gradient = cv2.morphologyEx(blur, cv2.MORPH_GRADIENT, kernel)
-edges = cv2.Canny(blur, 50, 150)
-combined = cv2.bitwise_or(gradient, edges)  # merge edge info
-inverted = cv2.bitwise_not(combined)
+    # Threshold + morphological closing
+    kernel = np.ones((3,3), np.uint8)
+    _, binary = cv2.threshold(blur, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel, iterations=2)
 
-    # 3️⃣ Binary Threshold
-    _, binary = cv2.threshold(inverted, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
-    binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel, iterations=2)
-
-    # 4️⃣ Distance Transform
+    # Distance transform + markers
     dist = cv2.distanceTransform(binary, cv2.DIST_L2, 5)
-    dist_norm = cv2.normalize(dist, None, 0, 1.0, cv2.NORM_MINMAX)
-    _, sure_fg = cv2.threshold(dist, 0.3 * dist.max(), 255, 0)
+    _, sure_fg = cv2.threshold(dist, 0.5*dist.max(), 255, 0)
     sure_fg = np.uint8(sure_fg)
-
-    # 5️⃣ Background / Unknown
     sure_bg = cv2.dilate(binary, kernel, iterations=3)
     unknown = cv2.subtract(sure_bg, sure_fg)
 
-    # 6️⃣ Markers
     num_labels, markers = cv2.connectedComponents(sure_fg)
     markers = markers + 1
     markers[unknown == 255] = 0
+    markers = markers.astype(np.int32)
+    cv2.watershed(img_rgb, markers)
 
-    # 7️⃣ Watershed
-    markers = cv2.watershed(img, markers)
-    img_ws = img.copy()
-    img_ws[markers == -1] = [255, 0, 0]
+    # Cell areas
+    regions = measure.regionprops_table(markers, properties=['label','area'])
+    cells_areas = np.array(regions['area']).tolist()
 
-    # 8️⃣ Label Image
-    label_image = color.label2rgb(markers, bg_label=1, bg_color=(0,0,0))
+    # Overlay for visualization
+    overlay = img_rgb.copy()
+    overlay[markers == -1] = [0,255,0]  # watershed boundaries in green
 
-    # 9️⃣ Visualization
-    fig, axs = plt.subplots(2, 3, figsize=(15, 10))
-    axs[0,0].imshow(gray, cmap='gray'); axs[0,0].set_title('Original (Grayscale)')
-    axs[0,1].imshow(gradient, cmap='gray'); axs[0,1].set_title('Morphological Gradient')
-    axs[0,2].imshow(binary, cmap='gray'); axs[0,2].set_title('Binary Mask')
-    axs[1,0].imshow(dist_norm, cmap='jet'); axs[1,0].set_title('Distance Transform')
-    axs[1,1].imshow(cv2.cvtColor(img_ws, cv2.COLOR_BGR2RGB)); axs[1,1].set_title('Watershed Boundaries')
-    axs[1,2].imshow(label_image); axs[1,2].set_title('Final Labeled Cells')
-    for ax in axs.ravel(): ax.axis('off')
-    plt.tight_layout()
-    plt.show()
-
-    props = measure.regionprops_table(markers, properties=['label', 'area'])
-    print(f'Detected {len(props['label'])} cells.')
-    return label_image
+    return {'markers': markers, 'cells_areas': cells_areas, 'overlay': overlay}
 ")
 
-# --- Run Segmentation ---
-py$segment_cells("D:/stomata/Just testing with Leica-ATC2000 - 20X/Ha-T1R1-U-20X.jpg")
+# -----------------------------
+# 2️⃣ YOLO inference (Python)
+# -----------------------------
+py_run_string("
+from ultralytics import YOLO
+import numpy as np
+import cv2
+
+def yolo_detect(image_rgb, yolo_model_path):
+    # Ensure image is RGB
+    if image_rgb.dtype != np.uint8:
+        image_rgb = cv2.convertScaleAbs(image_rgb)
+    model = YOLO(yolo_model_path)
+    results = model.predict(source=image_rgb, task='obb', save=False, verbose=False)[0]
+
+    stomata_areas = []
+    obb_list = results.obb.xyxyxyxy
+    for i in range(len(obb_list)):
+        obb = obb_list[i].cpu().numpy()
+        x_min, y_min = obb[:,0].min(), obb[:,1].min()
+        x_max, y_max = obb[:,0].max(), obb[:,1].max()
+        stomata_areas.append((x_max - x_min) * (y_max - y_min))
+
+    return {'obb_list': obb_list, 'stomata_areas': stomata_areas}
+")
+
+# -----------------------------
+# 3️⃣ R: Run both functions and combine
+# -----------------------------
+image_path <- "D:/stomata/training_tifs_8bit/A_T2R3_Ab_15X_frame_0000.tif"
+model_path <- "stomata_test1.pt"
+
+# Watershed segmentation
+ws_results <- py$watershed_cells(image_path)
+
+# YOLO detection
+yolo_results <- py$yolo_detect(ws_results$overlay, model_path)
+
+# Overlay YOLO boxes on watershed overlay
+library(abind)
+img_composite <- ws_results$overlay
+obb_list <- yolo_results$obb_list
+for(i in seq_along(obb_list)){
+  obb <- obb_list[[i]]$cpu()$numpy()
+  pts <- matrix(as.integer(obb), ncol=2, byrow=TRUE)
+  pts <- array(pts, dim=c(nrow(pts),1,2))
+  img_composite <- py$cv2$polylines(img_composite, [pts], isClosed=TRUE, color=c(255,0,0), thickness=2L)
+}
+
+# Collect stats
+cells_areas <- ws_results$cells_areas
+stomata_areas <- yolo_results$stomata_areas
+
+# Display in R
+library(grid)
+grid::grid.raster(img_composite/255)  # scale to [0,1] for plotting
