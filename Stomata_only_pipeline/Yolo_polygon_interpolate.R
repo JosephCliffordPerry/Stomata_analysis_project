@@ -80,11 +80,11 @@ plot_polygons_compare <- function(poly_orig, poly_interp) {
 ####################################################
 # Example usage
 ####################################################
-# Example from your segmentation
-original_poly <- stomata_list[["A-T2R3_Ab_1_frame_0000_obb_1.png"]][[1]][["segmentation_polygon"]]
-
-# Interpolate to 100 points
-interpolated_poly <- interpolate_polygon(original_poly, n_points = 100)
-
-# Plot comparison
-plot_polygons_compare(original_poly, interpolated_poly)
+# # Example from your segmentation
+# original_poly <- stomata_list[["A-T2R3_Ab_1_frame_0000_obb_1.png"]][[1]][["segmentation_polygon"]]
+# 
+# # Interpolate to 100 points
+# interpolated_poly <- interpolate_polygon(original_poly, n_points = 100)
+# 
+# # Plot comparison
+# plot_polygons_compare(original_poly, interpolated_poly)
