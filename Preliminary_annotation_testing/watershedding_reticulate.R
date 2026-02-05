@@ -90,7 +90,7 @@ def yolo_detect(image_rgb, yolo_model_path):
 # -----------------------------
 # 3️⃣ R: Run both functions and combine
 # -----------------------------
-image_path <- "D:/stomata/training_tifs_8bit/B1A_T2R5_Ab_15X_frame_0000.tif"
+image_path <- ""
 model_path <- "stomata_test1.pt"
 
 # Watershed segmentation

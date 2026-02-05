@@ -19,7 +19,7 @@ yolo_obb_inference <- function(image_dir, model_path) {
   ultralytics <- import("ultralytics")
   
   model <- ultralytics$YOLO(model_path)
-  image_paths <- list.files(image_dir, pattern = "\\.tif$", full.names = TRUE)
+  image_paths <- list.files(image_dir, pattern = "\\.jpg$", full.names = TRUE)
   
   all_results <- list()
   
@@ -150,11 +150,11 @@ individual_stomata_crop <- function(image_dir, model_path) {
   return(crops_df)
 }
 
-
+# 
 # ------------------------------
 # Example run
 # ------------------------------
-# image_dir <- "D:/stomata/November_images/November_image_data_8bit_tifs"
-# model_path <- "Stomata_obbox.pt"
+# image_dir <- "E:/Stomata_maize/september_25"
+# model_path <- "D:/stomata/MAize2.pt"
 # 
 # crops_df <- individual_stomata_crop(image_dir, model_path)

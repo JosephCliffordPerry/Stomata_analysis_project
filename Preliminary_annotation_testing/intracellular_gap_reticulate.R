@@ -119,4 +119,4 @@ def segment_cells_distance_transform(filename='plant_cells_20x.png', min_cell_ar
 
 
 # --- Run the updated segmentation ---
-seg_result <- py$segment_cells_distance_transform("D:/stomata/training_tifs_8bit/A_T2R3_Ab_15X_frame_0001.tif")
+seg_result <- py$segment_cells_distance_transform("D:/stomata/20Xstomata_test_8bit/2tile_x001_y002.tif")
