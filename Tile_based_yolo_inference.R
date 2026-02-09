@@ -14,11 +14,11 @@ params <- list(
   tile_size  = 128,
   overlap    = 96,
   iou_thresh = 0.5,
-  min_area   = 10,
+  min_area   = 500,
   max_area   = 5000,
-  min_circ   = 0.2,
+  min_circ   = 0.4,
   max_circ   = 1.0,
-  alpha      = 0.4
+  alpha      = 1
 )
 
 params$stride <- params$tile_size - params$overlap
@@ -50,6 +50,23 @@ def segment_tile(tile):
 
     return polys
 ", params$model_path))
+touches_tile_border <- function(p, tile_size, eps = 1){
+  any(
+    p[,1] <= 1 + eps |
+      p[,2] <= 1 + eps |
+      p[,1] >= tile_size - eps |
+      p[,2] >= tile_size - eps
+  )
+}
+
+touches_image_border <- function(p, img_w, img_h, eps = 1){
+  any(
+    p[,1] <= 1 + eps |
+      p[,2] <= 1 + eps |
+      p[,1] >= img_w - eps |
+      p[,2] >= img_h - eps
+  )
+}
 
 
 load_image <- function(path){
@@ -122,40 +139,29 @@ as_polyclip <- function(p){
   list(list(x = p[,1], y = p[,2]))
 }
 
-deduplicate_polygons <- function(polys, iou_thresh){
-  n <- length(polys)
-  if (n <= 1) return(polys)
+library(sf)
+
+poly_list_to_sf <- function(polys){
   
-  boxes <- lapply(polys, bbox)
-  keep <- rep(TRUE, n)
+  geoms <- lapply(polys, function(p){
+    
+    if(!all(p[1,] == p[nrow(p),]))
+      p <- rbind(p, p[1,])
+    
+    st_polygon(list(p))
+  })
   
-  for (i in seq_len(n - 1)){
-    if (!keep[i]) next
-    for (j in (i+1):n){
-      if (!keep[j]) next
-      if (!overlap_bbox(boxes[[i]], boxes[[j]])) next
-      if (polygon_iou(polys[[i]], polys[[j]]) >= iou_thresh){
-        u <- polyclip(
-          as_polyclip(polys[[i]]),
-          as_polyclip(polys[[j]]),
-          op = "union"
-        )
-        
-        # keep largest resulting polygon
-        areas <- vapply(u, function(pp){
-          poly_area(cbind(pp$x, pp$y))
-        }, numeric(1))
-        
-        polys[[i]] <- cbind(u[[which.max(areas)]]$x,
-                            u[[which.max(areas)]]$y)
-        
-        keep[j] <- FALSE
-      }
-    }
-  }
-  
-  polys[keep]
+  st_sf(geometry = st_sfc(geoms))
 }
+
+sf_to_poly_list <- function(sfobj){
+  
+  lapply(st_geometry(sfobj), function(g){
+    st_coordinates(g)[,1:2]
+  })
+}
+
+
 
 filter_polygons <- function(polys, min_area, max_area, min_circ, max_circ){
   Filter(function(p){
@@ -180,7 +186,7 @@ plot_overlay <- function(img, polys, alpha){
   
   ggplot(df, aes(x,y,group=id)) +
     annotation_custom(grob, 0,W,0,H) +
-    geom_polygon(fill="red", color="black", alpha=alpha) +
+    geom_polygon(fill="red",colour= "black", alpha=alpha) +
     coord_equal() + 
     theme_void()+
     scale_y_reverse()
@@ -193,9 +199,12 @@ run_yolo_pipeline <- function(p){
   imgp <- pad_image(img, p$tile_size, p$stride)
   tiles <- generate_tiles(dim(imgp), p$tile_size, p$stride)
   
+  img_h <- dim(img)[1]
+  img_w <- dim(img)[2]
+  
   pb <- txtProgressBar(0, nrow(tiles), style=3)
   polys <- list()
-   
+  
   for (i in seq_len(nrow(tiles))){
     setTxtProgressBar(pb, i)
     
@@ -207,25 +216,39 @@ run_yolo_pipeline <- function(p){
     ]
     
     raw <- py$segment_tile(tile)
+    
     for (p0 in raw){
+      
       p1 <- clean_polygon(p0)
       if (is.null(p1)) next
-      polys[[length(polys)+1]] <- shift_polygon(p1, t$x0, t$y0)
+      
+      # Reject polygons touching tile borders
+      #if (touches_tile_border(p1, p$tile_size)) next
+      
+      # Shift to full image coordinates
+      p2 <- shift_polygon(p1, t$x0, t$y0)
+      
+      # Reject polygons touching full image borders
+      if (touches_image_border(p2, img_w, img_h)) next
+      
+      polys[[length(polys)+1]] <- p2
     }
   }
   close(pb)
   
   if (length(polys) == 0) stop("No detections")
   
-  polys <- deduplicate_polygons(polys, p$iou_thresh)
   polys <- filter_polygons(
     polys, p$min_area, p$max_area, p$min_circ, p$max_circ
   )
   
-  plot_overlay(img, polys, p$alpha)
+  graph <- plot_overlay(img, polys, p$alpha)
+  
+  return(list(polys, graph))
 }
-run_yolo_pipeline(params)
+img <- load_image(params$image_path)
+output<-run_yolo_pipeline(params)
 
-
+output[2]
 
 
