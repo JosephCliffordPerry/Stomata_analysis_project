@@ -46,8 +46,13 @@ mask_to_polygons_sf <- function(mask){
   fg <- which(mask_bin, arr.ind = TRUE)
   if(nrow(fg) == 0) return(st_sf(geometry = st_sfc()))
   
+  img_h <- nrow(mask_bin)
+
   pts <- st_as_sf(
-    data.frame(x = fg[,"col"], y = fg[,"row"]),
+    data.frame(
+      x = fg[, "col"],
+      y = img_h - fg[, "row"] + 1
+    ),
     coords = c("x","y"),
     crs = NA
   )
@@ -105,7 +110,7 @@ dilate_polygons_sf <- function(sf_polys, dilate_dist){
 curve_stitch_sf <- function(
     polys,
     img_dim,
-    shrink_dist = 0,
+    shrink_dist = 3,
     dilate_radius = 3
 ){
   
@@ -133,8 +138,8 @@ img_dim <- dim(img)
 stitched_sf <- curve_stitch_sf(
   polys,
   img_dim,
-  shrink_dist = 2,
-  dilate_radius = 5
+  shrink_dist = 10,
+  dilate_radius = 0
 )
 
 # --------------------------------------------------------
