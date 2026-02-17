@@ -8,21 +8,23 @@ reticulate::py_require(
   packages = c("numpy", "opencv-python", "matplotlib", "scikit-image","ultralytics"), 
   python_version = "3.12.4"
 )
-params <- list(
-  image_path = "E:/Stomata/Sugarbeet_stomata_imaging/mips2/V1T2R2-Ab-mip.nd2 - V1T2R2-Ab-mip.nd2 (series 1)_MIP.tif",
-  model_path = "E:/Stomata/Sugarbeet_stomata_imaging/beetmip_model2/beetmip_model2.pt",
-  tile_size  = 128,
-  overlap    = 96,
-  iou_thresh = 0.5,
-  min_area   = 500,
-  max_area   = 5000,
-  min_circ   = 0.4,
-  max_circ   = 1.0,
-  alpha      = 1
-)
+# params <- list(
+#   image_path = "E:/Stomata/Sugarbeet_stomata_imaging/mips2/V1T2R2-Ab-mip.nd2 - V1T2R2-Ab-mip.nd2 (series 1)_MIP.tif",
+#   model_path = "E:/Stomata/Sugarbeet_stomata_imaging/beetmip_model2/beetmip_model2.pt",
+#   tile_size  = 128,
+#   overlap    = 96,
+#   iou_thresh = 0.5,
+#   min_area   = 500,
+#   max_area   = 3000,
+#   min_circ   = 0.4,
+#   max_circ   = 1.0,
+#   alpha      = 0.4
+# )
 
-params$stride <- params$tile_size - params$overlap
-py_run_string(sprintf("
+
+initialise_yolo_model <- function(model_path){
+  
+  py_run_string(sprintf("
 import numpy as np
 from ultralytics import YOLO
 
@@ -49,7 +51,9 @@ def segment_tile(tile):
             polys.append(np.asarray(p))
 
     return polys
-", params$model_path))
+", model_path))
+}
+
 touches_tile_border <- function(p, tile_size, eps = 1){
   any(
     p[,1] <= 1 + eps |
@@ -77,11 +81,38 @@ load_image <- function(path){
 }
 
 pad_image <- function(img, tile, stride){
-  h <- dim(img)[1]; w <- dim(img)[2]; c <- dim(img)[3]
+  
+  d <- dim(img)
+  
+  # ---- Force 3D ----
+  if(length(d) == 2){
+    img <- array(img, dim = c(d[1], d[2], 1))
+    d <- dim(img)
+  }
+  
+  if(length(d) == 3 && is.null(d[3])){
+    img <- array(img, dim = c(d[1], d[2], 1))
+    d <- dim(img)
+  }
+  
+  h <- d[1]
+  w <- d[2]
+  c <- d[3]
+  
+  # ---- Calculate padded size ----
   H <- ceiling((h - tile) / stride) * stride + tile
   W <- ceiling((w - tile) / stride) * stride + tile
+  
+  # ---- Allocate output ----
   out <- array(0, dim = c(H, W, c))
-  out[1:h, 1:w, ] <- img
+  
+  # ---- Copy image safely ----
+  if(c == 1){
+    out[1:h, 1:w, 1] <- img[,,1]
+  } else {
+    out[1:h, 1:w, ] <- img
+  }
+  
   out
 }
 
@@ -174,26 +205,58 @@ filter_polygons <- function(polys, min_area, max_area, min_circ, max_circ){
   }, polys)
 }
 
-plot_overlay <- function(img, polys, alpha){
-  H <- dim(img)[1]; W <- dim(img)[2]
+plot_overlay <- function(img, polys, metrics, alpha, circ_thresh = 0.9){
+  
+  H <- dim(img)[1]
+  W <- dim(img)[2]
+  
   img_rgb <- array(rep(img,3), dim = c(H,W,3))
   grob <- rasterGrob(img_rgb, width=unit(1,"npc"), height=unit(1,"npc"))
   
   df <- do.call(rbind, lapply(seq_along(polys), function(i){
+    
     p <- polys[[i]]
-    data.frame(x=p[,1], y=p[,2], id=i)
+    circ <- metrics$circularity[i]
+    
+    fill_col <- ifelse(circ > circ_thresh, "blue", "red")
+    
+    data.frame(
+      x = p[,1],
+      y = p[,2],
+      id = i,
+      fill_col = fill_col
+    )
   }))
   
-  ggplot(df, aes(x,y,group=id)) +
-    annotation_custom(grob, 0,W,0,H) +
-    geom_polygon(fill="red",colour= "black", alpha=alpha) +
-    coord_equal() + 
-    theme_void()+
+  ggplot(df, aes(x, y, group=id, fill=fill_col)) +
+    annotation_custom(grob, 0, W, 0, H) +
+    geom_polygon(alpha = alpha, colour = NA) +
+    scale_fill_identity() +
+    coord_equal() +
+    theme_void() +
     scale_y_reverse()
+}
+polygon_metrics <- function(polys){
   
-  
+  do.call(rbind, lapply(seq_along(polys), function(i){
+    
+    p <- polys[[i]]
+    
+    a   <- poly_area(p)
+    per <- poly_perimeter(p)
+    circ <- 4*pi*a/(per^2)
+    
+    data.frame(
+      id = i,
+      area = a,
+      circularity = circ
+    )
+  }))
 }
 run_yolo_pipeline <- function(p){
+  p$stride <- p$tile_size - p$overlap
+  
+  initialise_yolo_model(p$model_path)
   
   img <- load_image(p$image_path)
   imgp <- pad_image(img, p$tile_size, p$stride)
@@ -222,14 +285,9 @@ run_yolo_pipeline <- function(p){
       p1 <- clean_polygon(p0)
       if (is.null(p1)) next
       
-      # Reject polygons touching tile borders
-      #if (touches_tile_border(p1, p$tile_size)) next
-      
-      # Shift to full image coordinates
       p2 <- shift_polygon(p1, t$x0, t$y0)
       
-      # Reject polygons touching full image borders
-      if (touches_image_border(p2, img_w, img_h)) next
+     
       
       polys[[length(polys)+1]] <- p2
     }
@@ -241,14 +299,18 @@ run_yolo_pipeline <- function(p){
   polys <- filter_polygons(
     polys, p$min_area, p$max_area, p$min_circ, p$max_circ
   )
+  metrics <- polygon_metrics(polys)
+  graph <- plot_overlay(img, polys, metrics, p$alpha)
   
-  graph <- plot_overlay(img, polys, p$alpha)
+ 
   
-  return(list(polys, graph))
+  return(list(
+    polygons = polys,
+    overlay_plot = graph,
+    metrics = metrics
+  ))
 }
-img <- load_image(params$image_path)
-output<-run_yolo_pipeline(params)
-
-output[2]
+#img <- load_image(params$image_path)
+#output<-run_yolo_pipeline(params)
 
 
