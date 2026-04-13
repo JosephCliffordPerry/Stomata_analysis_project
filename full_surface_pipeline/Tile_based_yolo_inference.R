@@ -243,6 +243,6 @@ run_yolo_pipeline <- function(p){
   ))
 }
 
-# ---- Run ----
-# output <- run_yolo_pipeline(params)
-# print(output$overlay_plot)
+#---- Run ----
+output <- run_yolo_pipeline(params)
+print(output$overlay_plot)

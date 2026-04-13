@@ -5,13 +5,13 @@ library(fs)
 # ===============================
 # INPUT FOLDERS
 # ===============================
-image_folder  <- "D:/Stomatal_analysis_project/beetmip_yolo_dataset/images"
-label_folder  <- "D:/Stomatal_analysis_project/beetmip_yolo_dataset/labels"
+image_folder  <- "D:/Stomatal_analysis_project/20pctimages"
+label_folder  <- "D:/Stomatal_analysis_project/20pctlabels"
 
 # ===============================
 # OUTPUT FOLDERS
 # ===============================
-dataset_name<- "beetmip"
+dataset_name<- "Maize_by_hand"
 out_img_train <- paste0(dataset_name,"/seg/images/train")
 out_img_val   <- paste0(dataset_name,"/seg/images/val")
 out_lab_train <- paste0(dataset_name,"/seg/labels/train")
@@ -25,7 +25,7 @@ dir_create(out_lab_val, recurse = TRUE)
 # ===============================
 # READ ALL IMAGES
 # ===============================
-file_extension<-"\\.jpg$"
+file_extension<-"\\.png$"
 all_images <- list.files(image_folder, pattern = file_extension, full.names = FALSE)
 
 set.seed(42)

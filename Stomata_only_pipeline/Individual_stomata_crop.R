@@ -87,8 +87,8 @@ crop_obbs_and_save <- function(detections, image_dir, output_dir) {
       height <- sqrt(sum(edge2^2))
       
       # ➕ Increase crop area by +10%
-      width  <- width  * 1.10
-      height <- height * 1.10
+      width  <- width  * 1.20
+      height <- height * 1.20
       
       # 3️⃣ Rotation angle
       angle <- -atan2(edge1[2], edge1[1]) * 180 / pi  
@@ -154,7 +154,7 @@ individual_stomata_crop <- function(image_dir, model_path) {
 # ------------------------------
 # Example run
 # ------------------------------
-# image_dir <- "E:/Stomata_maize/september_25"
-# model_path <- "D:/stomata/MAize2.pt"
+ image_dir <- "E:/Stomata_maize/all_images/all_images"
+ model_path <- "D:/stomata/MAize2.pt"
 # 
-# crops_df <- individual_stomata_crop(image_dir, model_path)
+ crops_df <- individual_stomata_crop(image_dir, model_path)
