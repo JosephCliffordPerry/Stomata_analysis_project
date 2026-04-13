@@ -8,7 +8,7 @@
 library(fs)
 library(ggplot2)
 library(sf)
-
+#This has the issue of relying on a unoptimised polygon stitching function that makes it too slow 
 #sourece scripts 
 source("D:/Stomatal_analysis_project/full_surface_pipeline/Tile_based_yolo_inference.R")
 
@@ -181,7 +181,7 @@ batch_yolo_stitch <- function(
         plot_obj,
         width = 8,
         height = 8,
-        dpi = 300
+        dpi = 300 
       )
     }
     

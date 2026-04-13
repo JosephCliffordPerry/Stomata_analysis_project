@@ -1,8 +1,8 @@
 #full_surface_pipeline
-source("D:/Stomatal_analysis_project/stitch_and_inference_wrapper.R")
+source("D:/Stomatal_analysis_project/full_surface_pipeline/stitch_and_inference_wrapper.R")
 
 polys_all <- batch_yolo_stitch(
-  image_dir = "E:/Stomata/Sugarbeet_stomata_imaging/mips2",
+  image_dir = "E:/Stomata/Sugarbeet_stomata_imaging/sugarbeet_all_mips",
   model_path = "E:/Stomata/Sugarbeet_stomata_imaging/beetmip_model2/beetmip_model2.pt"
 )
 source("D:/Stomatal_analysis_project/full_surface_pipeline/Poly_list_to_morphometric_structure.R")
