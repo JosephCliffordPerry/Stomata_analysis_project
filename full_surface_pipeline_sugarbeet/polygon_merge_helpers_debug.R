@@ -52,10 +52,7 @@ merge_polygons_convex_hull <- function(
     max_bbox_height = Inf,
     max_area = Inf
 ){
-  
-  suppressPackageStartupMessages({
-    library(sf)
-    library(igraph)
+
   })
   
   # =====================================================
@@ -251,10 +248,105 @@ merge_polygons_convex_hull <- function(
       
       out_origin_ids[[length(out_origin_ids)+1]] <-
         merged_origins
+
+    library(data.table)
+  })
+  
+  # =====================================================
+  # CLEAN INPUT + INITIALISE ANCESTRY
+  # =====================================================
+  
+  cleaned <- lapply(seq_along(polygons), function(i){
+    
+    p <- polygons[[i]]
+    
+    if (inherits(p, "sfg")) return(p)
+    
+    if (is.null(p) || !is.numeric(p) ||
+        is.null(dim(p)) || nrow(p) < 3 || ncol(p) < 2)
+      return(NULL)
+    
+    p <- p[complete.cases(p), , drop = FALSE]
+    if (nrow(p) < 3) return(NULL)
+    
+    if (sqrt(sum((p[1,] - p[nrow(p),])^2)) > 1e-6)
+      p <- rbind(p, p[1,])
+    
+    if (nrow(p) < 4) return(NULL)
+    
+    p[nrow(p),] <- p[1,]
+    
+    st_polygon(list(p))
+  })
+  
+  valid <- !sapply(cleaned, is.null)
+  if (!any(valid)) return(NULL)
+  
+  polys_sf <- st_sf(
+    node_id = seq_len(sum(valid)),
+    origin_ids = lapply(seq_len(sum(valid)), function(i) i),
+    geometry = st_sfc(cleaned[valid])
+  )
+  
+  polys_sf <- st_set_precision(polys_sf, precision)
+  polys_sf <- st_make_valid(polys_sf)
+  
+  # =====================================================
+  # BUILD GRAPH (robust: no NA groups)
+  # =====================================================
+  
+  polys_sf$group <- polys_sf$node_id
+  
+  if (!is.null(axis_edges) && nrow(axis_edges) > 0) {
+    
+    edges <- as.matrix(axis_edges)
+    edges <- edges[complete.cases(edges), , drop = FALSE]
+    
+    edges <- data.table(
+      a = as.integer(edges[,1]),
+      b = as.integer(edges[,2])
+    )
+    
+    edges <- edges[
+      a %in% polys_sf$node_id &
+        b %in% polys_sf$node_id
+    ]
+    
+    if (nrow(edges) > 0) {
+      
+      g <- graph_from_data_frame(
+        edges,
+        directed = FALSE,
+        vertices = data.frame(
+          name = as.character(polys_sf$node_id)
+        )
+      )
+      
+      comps <- components(g)$membership
+      
+      # enforce full vector alignment (positional safety)
+      group_vec <- polys_sf$node_id
+      
+      names(comps) <- as.character(names(comps))
+      
+      for (i in seq_along(group_vec)) {
+        
+        nid <- as.character(polys_sf$node_id[i])
+        
+        if (nid %in% names(comps)) {
+          group_vec[i] <- comps[[nid]]
+        } else {
+          group_vec[i] <- max(comps) + i  # isolate safely
+        }
+      }
+      
+      polys_sf$group <- group_vec
+
     }
   }
   
   # =====================================================
+
   # OUTPUT
   # =====================================================
   
@@ -274,6 +366,42 @@ merge_polygons_convex_hull <- function(
   out_sf$origin_ids <- out_origin_ids
   
   out_sf
+
+  # MERGE WITH ANCESTRY PROPAGATION
+  # =====================================================
+  
+  group_ids <- unique(polys_sf$group)
+  
+  merged_geom <- vector("list", length(group_ids))
+  merged_origin <- vector("list", length(group_ids))
+  
+  for (ii in seq_along(group_ids)) {
+    
+    gid <- group_ids[ii]
+    
+    group_sf <- polys_sf[
+      polys_sf$group == gid,
+    ]
+    
+    geom_union <- st_union(group_sf$geometry)
+    hull <- st_convex_hull(geom_union)
+    
+    merged_geom[[ii]] <- hull[[1]]
+    
+    merged_origin[[ii]] <- unique(
+      unlist(group_sf$origin_ids)
+    )
+  }
+  
+  merged <- st_sf(
+    node_id = seq_along(merged_geom),
+    geometry = st_sfc(merged_geom)
+  )
+  
+  merged$origin_ids <- merged_origin
+  
+  return(merged)
+
 }
 
 build_bbox_iou_edges <- function(polys_sf,
@@ -364,6 +492,7 @@ split_isolated_polygons <- function(
     axis_length_threshold = 20,
     axis_tol = 1e-6,
     debug = TRUE
+    axis_tol = 1e-6
 ){
   
   suppressPackageStartupMessages({
@@ -372,7 +501,9 @@ split_isolated_polygons <- function(
   })
   
   # =====================================================
-  # SAFE INPUT
+
+  # SAFE INPUT: polygons -> sf_polys
+
   # =====================================================
   
   if (inherits(polygons, "sf")) {
@@ -381,9 +512,13 @@ split_isolated_polygons <- function(
     
   } else if (inherits(polygons, "sfc")) {
     
+
     sf_polys <- st_sf(
       geometry = polygons
     )
+
+    sf_polys <- st_sf(geometry = polygons)
+
     
   } else if (is.list(polygons)) {
     
@@ -402,6 +537,9 @@ split_isolated_polygons <- function(
     })
     
     sf_polys <- st_sf(
+
+      node_id = seq_along(sfg_list),
+
       geometry = st_sfc(sfg_list)
     )
     
@@ -412,7 +550,7 @@ split_isolated_polygons <- function(
   sf_polys <- st_make_valid(sf_polys)
   
   n <- nrow(sf_polys)
-  
+
   # =====================================================
   # IDS
   # =====================================================
@@ -430,6 +568,18 @@ split_isolated_polygons <- function(
   
   # =====================================================
   # ORIGINAL POLYGONS
+
+  # ensure IDs exist
+  if (is.null(sf_polys$node_id)) {
+    sf_polys$node_id <- seq_len(n)
+  }
+  
+  if (is.null(sf_polys$origin_ids)) {
+    sf_polys$origin_ids <- lapply(sf_polys$node_id, function(x) x)
+  }
+  
+  # =====================================================
+  # SAFE INPUT: original_polygons -> original_sf
   # =====================================================
   
   if (is.null(original_polygons)) {
@@ -441,10 +591,11 @@ split_isolated_polygons <- function(
     original_sf <- original_polygons
     
   } else if (inherits(original_polygons, "sfc")) {
-    
+
     original_sf <- st_sf(
       geometry = original_polygons
     )
+
     
   } else if (is.list(original_polygons)) {
     
@@ -463,15 +614,23 @@ split_isolated_polygons <- function(
     })
     
     original_sf <- st_sf(
+
+      node_id = seq_along(sfg_list),
+
       geometry = st_sfc(sfg_list)
     )
     
   } else {
     stop("Unsupported original_polygons format")
   }
-  
+
   if (!"poly_id" %in% names(original_sf)) {
     original_sf$poly_id <- seq_len(nrow(original_sf))
+
+  # ensure id exists
+  if (is.null(original_sf$node_id)) {
+    original_sf$node_id <- seq_len(nrow(original_sf))
+
   }
   
   # =====================================================
@@ -485,6 +644,7 @@ split_isolated_polygons <- function(
       remaining_original_polygons = original_sf,
       used_original_polygons = original_sf[0,],
       debug_table = NULL
+
     ))
   }
   
@@ -492,15 +652,17 @@ split_isolated_polygons <- function(
   # KNN
   # =====================================================
   
-  cent <- st_coordinates(
-    st_centroid(sf_polys)
-  )
-  
+
+
+
+  cent <- st_coordinates(st_centroid(sf_polys))
+
   knn <- FNN::get.knn(
     cent,
     k = min(k, max(1, n - 1))
   )
   
+
   # =====================================================
   # METRICS
   # =====================================================
@@ -508,7 +670,7 @@ split_isolated_polygons <- function(
   areas <- as.numeric(
     st_area(sf_polys)
   )
-  
+
   isolated <- logical(n)
   
   # =====================================================
@@ -533,11 +695,12 @@ split_isolated_polygons <- function(
   )
   
   # =====================================================
+
   # ISOLATION TEST
   # =====================================================
   
   for (i in seq_len(n)) {
-    
+
     g1 <- sf_polys$geometry[i]
     
     # ---------------------------------------------------
@@ -558,11 +721,18 @@ split_isolated_polygons <- function(
     # ---------------------------------------------------
     # AXIS EDGE FILTER
     # ---------------------------------------------------
+
+    if (areas[i] < area_min)
+      next
+    
+    g1 <- sf_polys$geometry[i]
+R
     
     coords <- st_coordinates(g1)[,1:2,drop=FALSE]
     
     dx <- diff(coords[,1])
     dy <- diff(coords[,2])
+
     
     seg_len <- sqrt(dx^2 + dy^2)
     
@@ -597,24 +767,41 @@ split_isolated_polygons <- function(
     # ---------------------------------------------------
     # OVERLAP FILTER
     # ---------------------------------------------------
+
+    seg_len <- sqrt(dx^2 + dy^2)
+    
+    has_axis_edge <- any(
+      seg_len >= axis_length_threshold &
+        (abs(dx) <= axis_tol | abs(dy) <= axis_tol)
+    )
+    
+    if (has_axis_edge)
+      next
+
     
     nbrs <- knn$nn.index[i,]
     
     overlap_found <- FALSE
+
     max_overlap <- 0
     max_neighbor <- NA
+
+
     
     for (j in nbrs) {
       
       g2 <- sf_polys$geometry[j]
-      
+   
       inter <- suppressWarnings(
         st_intersection(g1, g2)
       )
+
+      inter <- suppressWarnings(st_intersection(g1, g2))
+
       
       if (length(inter) == 0)
         next
-      
+
       a <- suppressWarnings(
         as.numeric(st_area(inter))
       )
@@ -651,10 +838,19 @@ split_isolated_polygons <- function(
           )
         }
         
+
+      a <- suppressWarnings(as.numeric(st_area(inter)))
+      
+      if (length(a) > 0 &&
+          max(a, na.rm = TRUE) > overlap_tol) {
+        
+        overlap_found <- TRUE
+
         break
       }
     }
     
+
     debug_df$max_overlap[i] <- max_overlap
     debug_df$overlap_neighbor[i] <- max_neighbor
     
@@ -675,10 +871,18 @@ split_isolated_polygons <- function(
   
   # =====================================================
   # OUTPUT
+
+    isolated[i] <- !overlap_found
+  }
+  
+  # =====================================================
+  # OUTPUT ISOLATED
+
   # =====================================================
   
   isolated_sf <- sf_polys[isolated,]
   
+
   used_ids <- unique(
     unlist(
       lapply(
@@ -739,6 +943,28 @@ split_isolated_polygons <- function(
     debug_table = debug_df
   )
 }
+
+  # =====================================================
+  # MAP BACK TO ORIGINALS
+  # =====================================================
+  
+  used_ids <- unique(unlist(isolated_sf$origin_ids))
+  
+  used_original <- original_sf[
+    original_sf$node_id %in% used_ids,
+  ]
+  
+  remaining_original <- original_sf[
+    !original_sf$node_id %in% used_ids,
+  ]
+  
+  return(list(
+    isolated_polygons = isolated_sf,
+    remaining_original_polygons = remaining_original,
+    used_original_polygons = used_original
+  ))
+}
+
 # =========================================================
 # DEBUG PLOT
 #
@@ -1046,3 +1272,4 @@ axis_merge_vectorised <- function(
   
   unique(as.data.table(edges)[, .(id1 = V1, id2 = V2)])
 }
+

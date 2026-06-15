@@ -2,41 +2,29 @@ library(sf)
 library(dplyr)
 library(terra)
 
-# -------------------------------
+# -----------------------------------
 # SETTINGS
-# -------------------------------
+# -----------------------------------
 
-rds_dir <- "E:/Stomata_maize/checkpoints/checkpoints4"
+root_dir <- "E:/Stomata_maize/checkpoints/inference_outputs"
 
-# -------------------------------
-# LOAD CHECKPOINT
-# -------------------------------
+# -----------------------------------
+# MATRIX -> POLYGON
+# -----------------------------------
 
-load_checkpoint <- function(f) {
+matrix_to_polygon <- function(mat) {
   
-  x <- readRDS(f)
+  mat <- as.data.frame(mat, stringsAsFactors = FALSE)
   
-  # checkpoint files
-  if (is.list(x) && "data" %in% names(x)) {
-    return(bind_rows(x$data))
-  }
+  # expected: image, object, row, col
+  if (ncol(mat) < 4) return(NULL)
   
-  # final result files
-  if (is.data.frame(x)) {
-    return(x)
-  }
+  colnames(mat)[1:4] <- c("image", "object", "row", "col")
   
-  stop(paste("Unknown file structure:", f))
-}
-
-# -------------------------------
-# PIXELS -> POLYGON
-# -------------------------------
-
-pixels_to_polygon <- function(df_sub) {
+  rows <- as.integer(mat$row)
+  cols <- as.integer(mat$col)
   
-  rows <- df_sub$row
-  cols <- df_sub$col
+  if (length(rows) == 0 || all(is.na(rows))) return(NULL)
   
   min_r <- min(rows)
   min_c <- min(cols)
@@ -44,243 +32,152 @@ pixels_to_polygon <- function(df_sub) {
   rr <- rows - min_r + 1
   cc <- cols - min_c + 1
   
-  mat <- matrix(
+  rmat <- matrix(
     0,
     nrow = max(rr),
     ncol = max(cc)
   )
   
-  mat[cbind(rr, cc)] <- 1
+  rmat[cbind(rr, cc)] <- 1
   
-  r <- rast(mat)
+  r <- rast(rmat)
   
-  p <- as.polygons(r, dissolve = TRUE)
+  p <- tryCatch(
+    as.polygons(r, dissolve = TRUE),
+    error = function(e) NULL
+  )
+  
+  if (is.null(p)) return(NULL)
+  
   p <- p[p$lyr.1 == 1, ]
   
   if (nrow(p) == 0) return(NULL)
   
-  p_sf <- st_as_sf(p)
+  sf_poly <- st_as_sf(p)
   
-  # shift back into original coordinates
-  geom <- st_geometry(p_sf)
+  # shift back to original coordinates
+  geom <- st_geometry(sf_poly)
   geom <- geom + c(min_c - 1, min_r - 1)
   
-  st_sf(geometry = geom)
+  sf_poly <- st_sf(geometry = geom)
+  
+  sf_poly$image <- mat$image[1]
+  sf_poly$object <- mat$object[1]
+  
+  sf_poly
 }
 
-# -------------------------------
-# FILTER FUNCTION
-# -------------------------------
+# -----------------------------------
+# FILTER
+# -----------------------------------
 
 filter_polygons <- function(
-    polygons_sf,
-    
-    complex_min_area = 1000,
-    complex_max_area = 10000,
-    complex_min_circularity = 0.3,
-    complex_max_circularity = 1,
-    
-    companion_min_area = 200,
-    companion_max_area = 5000,
-    companion_min_circularity = 0.1,
-    companion_max_circularity = 1
+    sf,
+    min_area = 4500,
+    max_area = 7000,
+    min_circ = 0.4,
+    max_circ = 0.8
 ){
   
-  df <- polygons_sf
+  sf$area <- as.numeric(st_area(sf))
   
-  # metric filters
-  df <- df %>%
-    
-    mutate(
-      
-      area_fail =
-        case_when(
-          
-          object == "Complex" ~
-            area < complex_min_area |
-            area > complex_max_area,
-          
-          object %in% c("Companion1", "Companion2") ~
-            area < companion_min_area |
-            area > companion_max_area,
-          
-          TRUE ~ TRUE
-        ),
-      
-      circularity_fail =
-        case_when(
-          
-          object == "Complex" ~
-            circularity < complex_min_circularity |
-            circularity > complex_max_circularity,
-          
-          object %in% c("Companion1", "Companion2") ~
-            circularity < companion_min_circularity |
-            circularity > companion_max_circularity,
-          
-          TRUE ~ TRUE
-        )
-    )
+  perim <- as.numeric(st_length(st_boundary(sf)))
   
-  filtered <- df %>%
+  sf$circularity <- 4 * pi * sf$area / (perim^2)
+  
+  sf %>%
     filter(
-      !area_fail &
-        !circularity_fail
+      area >= min_area,
+      area <= max_area,
+      circularity >= min_circ,
+      circularity <= max_circ
     )
-  
-  # image completeness check
-  image_check <- filtered %>%
-    st_drop_geometry() %>%
-    group_by(image) %>%
-    summarise(
-      has_complex = any(object == "Complex"),
-      has_c1 = any(object == "Companion1"),
-      has_c2 = any(object == "Companion2"),
-      .groups = "drop"
-    )
-  
-  valid_images <- image_check %>%
-    filter(
-      has_complex &
-        has_c1 &
-        has_c2
-    ) %>%
-    pull(image)
-  
-  filtered %>%
-    filter(image %in% valid_images)
 }
 
-# -------------------------------
-# PROCESS ONE CHECKPOINT
-# -------------------------------
+# -----------------------------------
+# PROCESS SINGLE RDA FILE
+# -----------------------------------
 
-process_checkpoint <- function(f) {
+process_file <- function(f){
   
-  cat("\n====================================\n")
-  cat("PROCESSING:", basename(f), "\n")
-  cat("====================================\n")
+  cat("\nProcessing:", basename(f), "\n")
   
-  all_df <- load_checkpoint(f)
+  env <- new.env()
+  load(f, envir = env)
   
-  if (nrow(all_df) == 0) {
-    cat("Empty checkpoint\n")
+  if (!exists("out_list", envir = env)) {
+    cat("Missing out_list\n")
     return(NULL)
   }
   
-  groups <- all_df %>%
-    group_by(image, object) %>%
-    group_split()
+  out_list <- env$out_list
   
-  poly_list <- vector("list", length(groups))
+  poly_list <- vector("list", length(out_list))
   
-  counter <- 1
-  
-  for (g in groups) {
+  for (i in seq_along(out_list)) {
     
-    poly <- tryCatch(
-      pixels_to_polygon(g),
+    poly_list[[i]] <- tryCatch(
+      matrix_to_polygon(out_list[[i]]),
       error = function(e) NULL
     )
-    
-    if (is.null(poly)) next
-    
-    poly$image <- g$image[1]
-    poly$object <- g$object[1]
-    poly$name <- paste0(g$image[1], "_", g$object[1])
-    
-    poly_list[[counter]] <- poly
-    counter <- counter + 1
   }
   
   poly_list <- poly_list[!sapply(poly_list, is.null)]
   
-  if (length(poly_list) == 0) {
-    cat("No polygons generated\n")
-    return(NULL)
-  }
+  if (length(poly_list) == 0) return(NULL)
   
-  polygons_sf <- bind_rows(poly_list)
+  sf_all <- bind_rows(poly_list)
   
-  # -------------------------------
-  # METRICS
-  # -------------------------------
+  # keep only Complex masks
+  sf_all <- sf_all %>%
+    filter(object == "Complex")
   
-  polygons_sf$area <- as.numeric(
-    st_area(polygons_sf)
-  )
+  sf_all <- filter_polygons(sf_all)
   
-  perim <- as.numeric(
-    st_length(st_boundary(polygons_sf))
-  )
+  cat("Remaining polygons:", nrow(sf_all), "\n")
   
-  polygons_sf$circularity <-
-    4 * pi * polygons_sf$area / (perim^2)
-  
-  # -------------------------------
-  # FILTER
-  # -------------------------------
-  
-  filtered_sf <- filter_polygons(
-    polygons_sf,
-    
-    complex_min_area = 2000,
-    complex_max_area = 10000,
-    complex_min_circularity = 0.2,
-    complex_max_circularity = 0.9,
-    
-    companion_min_area = 500,
-    companion_max_area = 3000,
-    companion_min_circularity = 0.2,
-    companion_max_circularity = 0.9
-  )
-  
-  cat("Remaining polygons:", nrow(filtered_sf), "\n")
-  
-  return(filtered_sf)
+  sf_all
 }
 
-# -------------------------------
-# RUN ALL CHECKPOINTS
-# -------------------------------
+# -----------------------------------
+# RECURSIVE FILE COLLECTION
+# -----------------------------------
 
 files <- list.files(
-  rds_dir,
-  pattern = "\\.rds$",
-  full.names = TRUE
+  root_dir,
+  pattern = "\\.RDA$",
+  full.names = TRUE,
+  recursive = TRUE
 )
 
-filtered_list <- vector("list", length(files))
+cat("Found files:", length(files), "\n")
 
-for (i in seq_along(files)) {
-  
-  filtered_list[[i]] <- tryCatch(
-    process_checkpoint(files[i]),
+# -----------------------------------
+# RUN ALL TASKS
+# -----------------------------------
+
+results <- lapply(files, function(f) {
+  tryCatch(
+    process_file(f),
     error = function(e) {
-      cat("FAILED:", basename(files[i]), "\n")
-      cat(e$message, "\n")
+      cat("FAILED:", basename(f), "\n")
       NULL
     }
   )
-}
+})
 
-filtered_list <- filtered_list[
-  !sapply(filtered_list, is.null)
-]
+results <- results[!sapply(results, is.null)]
 
-filtered_sf <- bind_rows(filtered_list)
+filtered_sf <- bind_rows(results)
 
-# -------------------------------
+# -----------------------------------
 # SAVE
-# -------------------------------
+# -----------------------------------
 
 save(
   filtered_sf,
-  file = "filtered_maize_polys.RDA"
+  file = "filtered_maize_complexes.RDA"
 )
 
-cat("\n====================================\n")
-cat("FINAL OUTPUT\n")
-cat("====================================\n")
-
+cat("\nDONE\n")
 print(filtered_sf)
