@@ -6,29 +6,7 @@ library(tidyr)
 
 rda_dir<-"E:/Stomata_maize/all_images/consensus_and_inference_rda2"
 
-load_polygons <- function(rda_dir){
-  
-  files <- list.files(
-    rda_dir,
-    pattern="\\.RDA$",
-    recursive=TRUE,
-    full.names=TRUE
-  )
-  
-  polys <- list()
-  
-  for(i in seq_along(files)){
-    
-    load(files[i])
-    
-    image_sf$file <- basename(files[i])
-    
-    polys[[i]] <- image_sf
-  }
-  
-  dplyr::bind_rows(polys)
-  
-}
+
 
 
 
@@ -280,13 +258,13 @@ project_shape <- function(shape, model){
   b
   
 }
-polys<-load_polygons(rda_dir)
+# polys<-load_polygons(rda_dir)
+# 
+# aligned<-align_polygons(polys)
+# 
+ aligned <- sample_polygon_landmarks(aligned_Stomata, 200)
 
-aligned<-align_polygons(polys)
-
-aligned <- sample_polygon_landmarks(aligned, 200)
-
-model <- build_shape_model(aligned)
+model <- build_shape_model(aligned_Stomata)
 
 plot_shape(model$mean_shape)
 
