@@ -1,105 +1,26 @@
-source("Stomatal_decomposition_direct_inference/align_polygons.R")
 library(sf)
 library(dplyr)
 library(purrr)
 library(tidyr)
-
-rda_dir<-"E:/Stomata_maize/all_images/consensus_and_inference_rda2"
-
-
-
-
-
-sample_polygon_landmarks <- function(aligned, n_points = 200){
-  
-  resample_polygon <- function(g){
-    
-    xy <- sf::st_coordinates(g)[,1:2, drop = FALSE]
-    
-    # remove duplicated closing point
-    if(all(xy[1,] == xy[nrow(xy),]))
-      xy <- xy[-nrow(xy), , drop = FALSE]
-    
-    # edge vectors
-    nxt <- rbind(xy[-1,,drop=FALSE], xy[1,,drop=FALSE])
-    
-    seg_len <- sqrt(rowSums((nxt - xy)^2))
-    
-    cum_len <- c(0, cumsum(seg_len))
-    total_len <- tail(cum_len,1)
-    
-    target <- seq(0, total_len, length.out = n_points + 1)
-    target <- target[-length(target)]      # don't duplicate first point
-    
-    pts <- matrix(NA_real_, n_points, 2)
-    
-    j <- 1
-    
-    for(i in seq_along(target)){
-      
-      while(cum_len[j+1] < target[i])
-        j <- j + 1
-      
-      d <- target[i] - cum_len[j]
-      
-      if(seg_len[j] == 0){
-        
-        pts[i,] <- xy[j,]
-        
-      } else {
-        
-        alpha <- d / seg_len[j]
-        
-        pts[i,] <-
-          (1-alpha)*xy[j,] +
-          alpha*nxt[j,]
-        
-      }
-      
-    }
-    
-    ## ---------------------------------------------------
-    ## choose a consistent starting landmark
-    ## right-most point after alignment
-    ## ---------------------------------------------------
-    
-    start <- which.max(pts[,1])
-    
-    pts <- rbind(
-      pts[start:n_points,,drop=FALSE],
-      pts[1:(start-1),,drop=FALSE]
-    )
-    
-    pts
-    
-  }
-  
-  aligned$landmarks <-
-    lapply(sf::st_geometry(aligned), resample_polygon)
-  
-  aligned
-  
-}
 
 
 # ============================================================
 # Build Active Shape Model (ASM)
 # ============================================================
 
-build_shape_model <- function(aligned, variance = 0.98){
-  
-  stopifnot("landmarks" %in% names(aligned))
-  
-  ## ----------------------------------------
-  ## Convert landmarks to vectors
-  ## ----------------------------------------
+build_shape_model <- function(samples, variance = 0.98){
   
   X <- do.call(
     rbind,
-    lapply(aligned$landmarks, function(x)
-      as.vector(t(x)))
+    lapply(samples, function(s){
+      
+      if(is.null(s$landmarks))
+        return(NULL)
+      
+      as.vector(t(s$landmarks))
+      
+    })
   )
-  
   ## ----------------------------------------
   ## PCA
   ## ----------------------------------------
@@ -256,20 +177,15 @@ project_shape <- function(shape, model){
   )
   
   b
-  
 }
-# polys<-load_polygons(rda_dir)
+
 # 
-# aligned<-align_polygons(polys)
+# model <- build_shape_model(aligned_Stomata)
 # 
- aligned <- sample_polygon_landmarks(aligned_Stomata, 200)
-
-model <- build_shape_model(aligned_Stomata)
-
-plot_shape(model$mean_shape)
-
-
-plot_mode(model, mode = 1)
+# plot_shape(model$mean_shape)
+# 
+# 
+# plot_mode(model, mode = 1)
 
 fit_initial_shape <- function(shape, model){
   
@@ -282,21 +198,21 @@ fit_initial_shape <- function(shape, model){
   
 }
 
+# 
+# consensus <- aligned$landmarks[[1]]
+# 
+# 
+# initial <- fit_initial_shape(
+#   consensus,
+#   model
+# )
+# 
+# 
+# plot_shape(consensus,col="red")
+# 
+# plot_shape(
+#   initial,
+#   add=TRUE,
+#   col="blue"
+# )
 
-consensus <- aligned$landmarks[[1]]
-
-
-initial <- fit_initial_shape(
-  consensus,
-  model
-)
-
-
-plot_shape(consensus,col="red")
-
-plot_shape(
-  initial,
-  add=TRUE,
-  col="blue"
-)
-d

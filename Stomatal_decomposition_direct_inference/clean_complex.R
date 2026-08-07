@@ -1,3 +1,27 @@
+
+refine_with_active_contour <- function(consensus_sf,img_path,density){
+
+py_run_string("
+import numpy as np
+import cv2
+
+def build_snake_inputs(image_path, density):
+
+    img = cv2.imread(image_path, cv2.IMREAD_GRAYSCALE)
+    if img is None:
+        return None
+
+    img = img.astype(np.float32)
+    img = (img - img.min()) / (img.max() - img.min() + 1e-8)
+
+    density = density.astype(np.float32)
+    density = (density - density.min()) / (density.max() - density.min() + 1e-8)
+
+    return {
+        'image': img,
+        'density': density
+    }
+")
 py_run_string("
 import numpy as np
 from skimage.segmentation import active_contour
@@ -14,10 +38,9 @@ def run_active_contour(image, init_snake,
 
     image = image.astype(np.float64)
 
-    image -= image.min()
-
+    image = image - image.min()
     if image.max() > 0:
-        image /= image.max()
+        image = image / image.max()
 
     image = gaussian(image, sigma=sigma)
 
@@ -34,94 +57,73 @@ def run_active_contour(image, init_snake,
     )
 
     return snake
-")
 
-refine_with_active_contour <- function(
-    consensus_sf,
-    snake_img,
-    n_points = 250,
-    alpha = 0.01,
-    beta = 5,
-    gamma = 0.001,
-    sigma = 2,
-    max_iter = 500
-){
+globals()['run_active_contour'] = run_active_contour
+")
+snake_inputs <- py$build_snake_inputs(img_path, density)
+snake_img <- snake_inputs$image
+
+fit_ellipse <- function(coords){
   
-  library(sf)
+  ctr <- colMeans(coords)
+  covmat <- cov(coords)
+  eig <- eigen(covmat)
+  
+  list(
+    centre = ctr,
+    major = 2 * sqrt(eig$values[1]),
+    minor = 2 * sqrt(eig$values[2]),
+    rotation = atan2(eig$vectors[2,1], eig$vectors[1,1])
+  )
+}
+
+
+ellipse_points <- function(fit, n=200){
+  
+  t <- seq(0, 2*pi, length.out=n)
+  
+  x <- fit$major * cos(t)
+  y <- fit$minor * sin(t)
+  
+  R <- matrix(c(
+    cos(fit$rotation), -sin(fit$rotation),
+    sin(fit$rotation),  cos(fit$rotation)
+  ), 2,2, byrow=TRUE)
+  
+  pts <- cbind(x,y) %*% R
+  
+  pts[,1] <- pts[,1] + fit$centre[1]
+  pts[,2] <- pts[,2] + fit$centre[2]
+  
+  pts
+}
+
   
   coords <- st_coordinates(consensus_sf)[,1:2]
-  
   coords <- coords[-nrow(coords),]
   
-  centre <- colMeans(coords)
-  
-  eig <- eigen(cov(coords))
-  
-  major <- 2 * sqrt(eig$values[1])
-  
-  minor <- 2 * sqrt(eig$values[2])
-  
-  theta <- atan2(
-    eig$vectors[2,1],
-    eig$vectors[1,1]
-  )
-  
-  t <- seq(0,2*pi,length.out=n_points)
-  
-  ellipse <- cbind(
-    major*cos(t),
-    minor*sin(t)
-  )
-  
-  R <- matrix(
-    c(
-      cos(theta),-sin(theta),
-      sin(theta), cos(theta)
-    ),
-    2,2,
-    byrow=TRUE
-  )
-  
-  ellipse <- ellipse %*% R
-  
-  ellipse[,1] <- ellipse[,1] + centre[1]
-  ellipse[,2] <- ellipse[,2] + centre[2]
+  fit <- fit_ellipse(coords)
+  init <- ellipse_points(fit, n = 200)
   
   snake <- py$run_active_contour(
     snake_img,
-    ellipse,
-    alpha,
-    beta,
-    gamma,
+    init,
+    0.01,   # alpha
+    5,      # beta
+    0.001,  # gamma
     0,
     1,
-    sigma,
-    as.integer(max_iter)
+    2,      # sigma
+    500
   )
   
   snake <- py_to_r(snake)
   
-  snake <- rbind(
-    snake,
-    snake[1,,drop=FALSE]
-  )
-  
-  snake_sf <- st_sf(
-    geometry = st_sfc(
-      st_polygon(list(snake))
-    )
-  )
+  snake <- rbind(snake, snake[1,])
   
   list(
-    ellipse = st_sf(
-      geometry = st_sfc(
-        st_polygon(
-          list(
-            rbind(ellipse, ellipse[1,])
-          )
-        )
-      )
-    ),
-    snake = snake_sf
+    ellipse = st_sfc(st_polygon(list(rbind(init, init[1,])))),
+    snake = st_sfc(st_polygon(list(snake)))
   )
 }
+

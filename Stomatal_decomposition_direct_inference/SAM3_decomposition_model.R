@@ -1,22 +1,52 @@
-
+#you may need to delete and redownload the sam version as it is easily corrupted 
 library(reticulate)
 library(sf)
 library(dplyr)
+library(terra)
+Sys.setenv(RETICULATE_PYTHON = "managed")
+
+py_require(
+  packages = c(
+    "numpy",
+    "opencv-python",
+    "matplotlib",
+    "scikit-image",
+    "ultralytics",
+    "torch" ,
+    "torchvision" ,
+    "torchaudio" ,
+    "segment-anything@git+https://github.com/facebookresearch/segment-anything.git"
+  ),
+  python_version = "3.12.4"
+)
 
 find_stomatal_complex <- function(
     img_dir,
     overlay_dir = file.path(img_dir, "overlays"),
-    min_ratio = 0.65,
+    min_ratio = 0.40,
     max_ratio = 0.8,
     min_sam_score = 0.85,
     edge_tol_px = 2,
-    debug = FALSE,
+    debug = TRUE,
     contour_refine = FALSE,
-    resume = TRUE
+    resume = TRUE,
+    retry_failed = FALSE
 ){
   
   dir.create(overlay_dir, showWarnings = FALSE, recursive = TRUE)
+  failed_file <- file.path(
+    overlay_dir,
+    "failed_inferences.txt"
+  )
   
+  failed_images <- character(0)
+  
+  if (file.exists(failed_file)) {
+    failed_images <- readLines(
+      failed_file,
+      warn = FALSE
+    )
+  }
   # ---------------------------------------------------------
   # PYTHON: ONLY SAM INFERENCE (NO FILTERING, NO CONTOURS)
   # ---------------------------------------------------------
@@ -203,7 +233,7 @@ def run_sam(image_path):
     completed <- tools::file_path_sans_ext(
       list.files(
         overlay_dir,
-        pattern = "\\.RDA$"
+        pattern = "\\.RDS$"
       )
     )
     
@@ -218,12 +248,33 @@ def run_sam(image_path):
   if (resume) {
     
     bases <- tools::file_path_sans_ext(basename(img_files))
-    
-    keep <- !(bases %in% completed)
+    if (retry_failed) {
+      
+      keep <- !(bases %in% completed)
+      
+      cat(
+        "Retrying failed detections.\n"
+      )
+      
+    } else {
+      
+      keep <- !(
+        bases %in% completed |
+          bases %in% failed_images
+      )
+      
+    }
     
     img_files <- img_files[keep]
     
-    cat(length(img_files), "images remaining.\n")
+    cat(
+      length(completed),
+      "completed,",
+      length(failed_images),
+      "failed,",
+      sum(keep),
+      "remaining.\n"
+    )
   }
   all_polygons <- list()
   
@@ -261,8 +312,12 @@ def run_sam(image_path):
     
     cat("Processing:", base, "\n")
     
-    res <- py$run_sam(img_path)
-    if(is.null(res)) next
+    tryCatch({
+      
+      res <- py$run_sam(img_path)
+      
+      if(is.null(res))
+        stop("SAM returned NULL")
     
     masks <- lapply(res$masks, function(x) x == 1)
     scores <- unlist(res$scores)
@@ -365,15 +420,58 @@ def run_sam(image_path):
     
     image_sf <- bind_rows(sf_list)
     
-    save(
+    saveRDS(
       image_sf,
-      file = file.path(
+      file.path(
         overlay_dir,
-        paste0(base, ".RDA")
+        paste0(base, ".RDS")
       )
     )
-    
+    cat(
+      "SUCCESS:",
+      base,
+      "\n"
+    )
+    if(base %in% failed_images){
+      
+      failed_images <- failed_images[
+        failed_images != base
+      ]
+      
+      writeLines(
+        failed_images,
+        failed_file
+      )
+      
+    }
     all_polygons[[base]] <- image_sf
+  }, error = function(e){
     
-  }}
+    cat(
+      "FAILED:",
+      base,
+      "\n",
+      conditionMessage(e),
+      "\n"
+    )
+    
+    if(!(base %in% failed_images)){
+      
+      write(
+        base,
+        failed_file,
+        append = TRUE
+      )
+      
+      failed_images <<- c(
+        failed_images,
+        base
+      )
+      
+    }
+    
+  })
+  }
+}
 
+find_stomatal_complex(img_dir ="E:/Stomata_maize/all_images/all_images/crops",overlay_dir = "E:/Stomata_maize/all_images/consensus_and_inference_rda3")
